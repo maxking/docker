@@ -269,6 +269,23 @@ func (a *Driver) createDirsFor(id string) error {
 	return nil
 }
 
+
+// Helper function to return paths that needs to be created.
+func getPath(dir string, label string) (path string, err error) {
+	switch dir {
+	case "mnt":
+		return "mnt", nil
+
+	case "diff":
+		return "diff/" + label, nil
+
+	case "layers":
+		return "layers/" + label, nil
+
+	default:
+		return "", fmt.Errorf("Unknown directory option %s for AUFS", dir)
+	}
+}
 // Helper function to debug EBUSY errors on remove.
 func debugEBusy(mountPath string) (out []string, err error) {
 	// lsof is not part of GNU coreutils. This is a best effort
@@ -374,10 +391,59 @@ func (a *Driver) Remove(id string) error {
 	return nil
 }
 
+
+// This function, unlike its name, not just returns the paths but also copies
+// over the diffs (layers) to the destination directory of label. If they
+// already exist, they are not copied.
+func (a *Driver) getParentLayerPathsWithLabel(id, label string) ([]string, error) {
+	parentIds, err := getParentIDs(a.rootPath(), id)
+	if err != nil {
+		return nil, err
+	}
+	layers := make([]string, len(parentIds))
+
+	// First of all, copy the top level diff.
+	err = CopyDir(path.Join(a.rootPath(), "diff", id), path.Join(a.rootPath(), "diff", label, id))
+	if (err != nil) {
+		return nil, err
+	}
+
+	// Get the diff paths for all the parent ids and also copy over all the
+	// parent layers to the label directory.
+	for i, p := range parentIds {
+		original_path := path.Join(a.rootPath(), "diff",  p)
+		label_path := path.Join(a.rootPath(), "diff", label, p)
+		err = CopyDir(original_path, label_path)
+		if err != nil {
+			return nil, err
+		}
+		layers[i] = label_path
+	}
+	return layers, nil
+}
+
 // Get returns the rootfs path for the id.
 // This will mount the dir at its given path
-func (a *Driver) Get(id, mountLabel string) (string, error) {
-	parents, err := a.getParentLayerPaths(id)
+func (a *Driver) Get(id, label string) (string, error) {
+	/*
+	Label is considered to be an organization and each organization has a
+	separate copy of their base layers. The directory structure for the
+	layers changes here but is transparent to the code above this point
+	since they only care about the final mounted rootfs of the container.
+
+    /aufs/diff/label1/id1
+    /aufs/diff/label1/id2
+    /aufs/diff/label2/id1
+    /aufs/diff/label2/id2
+
+    This is how the directory structure would look for two  different diffs
+    which belongs to two different labels. If the paths do not exist, they
+    are copied over from the root path.
+
+    */
+
+	label = "docker"
+	parents, err := a.getParentLayerPathsWithLabel(id, label)
 	if err != nil && !os.IsNotExist(err) {
 		return "", err
 	}
@@ -387,7 +453,7 @@ func (a *Driver) Get(id, mountLabel string) (string, error) {
 	a.pathCacheLock.Unlock()
 
 	if !exists {
-		m = a.getDiffPath(id)
+		m = a.getLabelDiffPath(id, label)
 		if len(parents) > 0 {
 			m = a.getMountpoint(id)
 		}
@@ -399,7 +465,8 @@ func (a *Driver) Get(id, mountLabel string) (string, error) {
 	// If a dir does not have a parent ( no layers )do not try to mount
 	// just return the diff path to the data
 	if len(parents) > 0 {
-		if err := a.mount(id, m, mountLabel, parents); err != nil {
+		fmt.Println("parents: ", parents, "\nmount point: ", m)
+		if err := a.mount(id, m, label, parents); err != nil {
 			return "", err
 		}
 	}
@@ -534,7 +601,7 @@ func (a *Driver) getParentLayerPaths(id string) ([]string, error) {
 	return layers, nil
 }
 
-func (a *Driver) mount(id string, target string, mountLabel string, layers []string) error {
+func (a *Driver) mount(id string, target string, label string, layers []string) error {
 	a.Lock()
 	defer a.Unlock()
 
@@ -543,9 +610,12 @@ func (a *Driver) mount(id string, target string, mountLabel string, layers []str
 		return err
 	}
 
-	rw := a.getDiffPath(id)
+	rw := a.getLabelDiffPath(id, label)
 
-	if err := a.aufsMount(layers, rw, target, mountLabel); err != nil {
+	// The last argument to aufsMount is supposed to be some mountLabel which
+	// was changed to receive a different purpose. So, just passing a default
+	// value for that.
+	if err := a.aufsMount(layers, rw, target, ""); err != nil {
 		return fmt.Errorf("error creating aufs mount to %s: %v", target, err)
 	}
 	return nil

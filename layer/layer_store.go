@@ -6,6 +6,7 @@ import (
 	"io"
 	"io/ioutil"
 	"sync"
+	"strings"
 
 	"github.com/Sirupsen/logrus"
 	"github.com/docker/distribution"
@@ -615,6 +616,10 @@ func (ls *layerStore) initMount(graphID, parent, mountLabel string, initFunc Mou
 	// then the initID should be randomly generated.
 	initID := fmt.Sprintf("%s-init", graphID)
 
+
+	// set docker as the default value of label.
+	label := "docker"
+
 	createOpts := &graphdriver.CreateOpts{
 		MountLabel: mountLabel,
 		StorageOpt: storageOpt,
@@ -623,7 +628,18 @@ func (ls *layerStore) initMount(graphID, parent, mountLabel string, initFunc Mou
 	if err := ls.driver.CreateReadWrite(initID, parent, createOpts); err != nil {
 		return "", err
 	}
-	p, err := ls.driver.Get(initID, "")
+
+	for key, value := range storageOpt {
+		key := strings.ToLower(key)
+		switch key {
+		case "label":
+			label = strings.ToLower(value)
+		default:
+			return "", fmt.Errorf("Unknown storageOpt %s", key)
+		}
+	}
+
+	p, err := ls.driver.Get(initID, label)
 	if err != nil {
 		return "", err
 	}
