@@ -142,12 +142,15 @@ func CopyDir(src string, dst string) (err error) {
 	dst = filepath.Clean(dst)
 
 	_, err = os.Stat(dst)
-	if err != nil && !os.IsNotExist(err) {
+	if err == nil {
+		return
+	}
+	if !os.IsNotExist(err) {
 		return
 	}
 
 	cpCmd := exec.Command("cp", "-rf", src, dst)
-	fmt.Println(cpCmd)
+	fmt.Println("Copying: ", src, dst, "\n")
 
 	err = cpCmd.Run()
 	if (err != nil) {
