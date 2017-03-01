@@ -213,13 +213,10 @@ func (a *Driver) CreateReadWrite(id, parent string, opts *graphdriver.CreateOpts
 // mnt, layers, and diff
 func (a *Driver) Create(id, parent string, opts *graphdriver.CreateOpts) error {
 
-	if opts != nil && len(opts.StorageOpt) != 0 {
-		return fmt.Errorf("--storage-opt is not supported for aufs")
-	}
-
 	if err := a.createDirsFor(id); err != nil {
 		return err
 	}
+
 	// Write the layers metadata
 	f, err := os.Create(path.Join(a.rootPath(), "layers", id))
 	if err != nil {
@@ -270,22 +267,6 @@ func (a *Driver) createDirsFor(id string) error {
 }
 
 
-// Helper function to return paths that needs to be created.
-func getPath(dir string, label string) (path string, err error) {
-	switch dir {
-	case "mnt":
-		return "mnt", nil
-
-	case "diff":
-		return "diff/" + label, nil
-
-	case "layers":
-		return "layers/" + label, nil
-
-	default:
-		return "", fmt.Errorf("Unknown directory option %s for AUFS", dir)
-	}
-}
 // Helper function to debug EBUSY errors on remove.
 func debugEBusy(mountPath string) (out []string, err error) {
 	// lsof is not part of GNU coreutils. This is a best effort
@@ -392,6 +373,20 @@ func (a *Driver) Remove(id string) error {
 }
 
 
+
+func (a *Driver) copyLayerToLabel(id, label string) (string, error) {
+	original_path := a.getDiffPath(id)
+	label_path := a.getLabelDiffPath(id, label)
+	err := CopyDir(original_path, label_path, a.labelDiffPath(label))
+
+	if err != nil {
+		return "", err
+	}
+
+	return label_path, nil
+}
+
+
 // This function, unlike its name, not just returns the paths but also copies
 // over the diffs (layers) to the destination directory of label. If they
 // already exist, they are not copied.
@@ -403,17 +398,18 @@ func (a *Driver) getParentLayerPathsWithLabel(id, label string) ([]string, error
 	layers := make([]string, len(parentIds))
 
 	// First of all, copy the top level diff.
-	err = CopyDir(path.Join(a.rootPath(), "diff", id), path.Join(a.rootPath(), "diff", label, id))
-	if (err != nil) {
-		return nil, err
-	}
+	// err = CopyDir(path.Join(a.rootPath(), "diff", id), path.Join(a.rootPath(), "diff", label, id))
+	// if (err != nil) {
+	// 	return nil, err
+	// }
 
 	// Get the diff paths for all the parent ids and also copy over all the
 	// parent layers to the label directory.
 	for i, p := range parentIds {
-		original_path := path.Join(a.rootPath(), "diff",  p)
-		label_path := path.Join(a.rootPath(), "diff", label, p)
-		err = CopyDir(original_path, label_path)
+		if i == 0 {
+			continue
+		}
+		label_path, err := a.copyLayerToLabel(p, label)
 		if err != nil {
 			return nil, err
 		}
@@ -422,9 +418,19 @@ func (a *Driver) getParentLayerPathsWithLabel(id, label string) ([]string, error
 	return layers, nil
 }
 
+
+func getLabel(mountLabel string) (string, string) {
+	val := strings.Split(mountLabel, ":")
+	if len(val) > 1 {
+		return val[0], val[1]
+	} else {
+		return val[0], "docker"
+	}
+}
+
 // Get returns the rootfs path for the id.
 // This will mount the dir at its given path
-func (a *Driver) Get(id, label string) (string, error) {
+func (a *Driver) Get(id, mountLabel string) (string, error) {
 	/*
 	Label is considered to be an organization and each organization has a
 	separate copy of their base layers. The directory structure for the
@@ -442,7 +448,8 @@ func (a *Driver) Get(id, label string) (string, error) {
 
     */
 
-	label = "docker"
+	mountLabel, label := getLabel(mountLabel)
+
 	parents, err := a.getParentLayerPathsWithLabel(id, label)
 	if err != nil && !os.IsNotExist(err) {
 		return "", err
@@ -453,7 +460,7 @@ func (a *Driver) Get(id, label string) (string, error) {
 	a.pathCacheLock.Unlock()
 
 	if !exists {
-		m = a.getLabelDiffPath(id, label)
+		m = a.getDiffPath(id)
 		if len(parents) > 0 {
 			m = a.getMountpoint(id)
 		}
@@ -466,7 +473,7 @@ func (a *Driver) Get(id, label string) (string, error) {
 	// just return the diff path to the data
 	if len(parents) > 0 {
 		fmt.Println("parents: ", parents, "\nmount point: ", m)
-		if err := a.mount(id, m, label, parents); err != nil {
+		if err := a.mount(id, m, mountLabel, parents); err != nil {
 			return "", err
 		}
 	}
@@ -601,7 +608,7 @@ func (a *Driver) getParentLayerPaths(id string) ([]string, error) {
 	return layers, nil
 }
 
-func (a *Driver) mount(id string, target string, label string, layers []string) error {
+func (a *Driver) mount(id string, target string, mountLabel string, layers []string) error {
 	a.Lock()
 	defer a.Unlock()
 
@@ -610,12 +617,12 @@ func (a *Driver) mount(id string, target string, label string, layers []string) 
 		return err
 	}
 
-	rw := a.getLabelDiffPath(id, label)
+	rw := a.getDiffPath(id)
 
 	// The last argument to aufsMount is supposed to be some mountLabel which
 	// was changed to receive a different purpose. So, just passing a default
 	// value for that.
-	if err := a.aufsMount(layers, rw, target, ""); err != nil {
+	if err := a.aufsMount(layers, rw, target, mountLabel); err != nil {
 		return fmt.Errorf("error creating aufs mount to %s: %v", target, err)
 	}
 	return nil

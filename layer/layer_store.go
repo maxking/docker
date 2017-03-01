@@ -459,6 +459,8 @@ func (ls *layerStore) CreateRWLayer(name string, parent ChainID, opts *CreateRWL
 		initFunc = opts.InitFunc
 	}
 
+	fmt.Println("storage-opts: ", storageOpt)
+
 	ls.mountL.Lock()
 	defer ls.mountL.Unlock()
 	m, ok := ls.mounts[name]
@@ -616,10 +618,6 @@ func (ls *layerStore) initMount(graphID, parent, mountLabel string, initFunc Mou
 	// then the initID should be randomly generated.
 	initID := fmt.Sprintf("%s-init", graphID)
 
-
-	// set docker as the default value of label.
-	label := "docker"
-
 	createOpts := &graphdriver.CreateOpts{
 		MountLabel: mountLabel,
 		StorageOpt: storageOpt,
@@ -629,17 +627,15 @@ func (ls *layerStore) initMount(graphID, parent, mountLabel string, initFunc Mou
 		return "", err
 	}
 
-	for key, value := range storageOpt {
-		key := strings.ToLower(key)
-		switch key {
-		case "label":
-			label = strings.ToLower(value)
-		default:
-			return "", fmt.Errorf("Unknown storageOpt %s", key)
-		}
+
+	label, ok := createOpts.StorageOpt["label"]
+
+	if !ok {
+		label = ""
 	}
 
-	p, err := ls.driver.Get(initID, label)
+	mountLabel = mountLabel + ":" + label
+	p, err := ls.driver.Get(initID, mountLabel)
 	if err != nil {
 		return "", err
 	}
