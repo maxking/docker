@@ -6,7 +6,6 @@ import (
 	"io"
 	"io/ioutil"
 	"sync"
-	"strings"
 
 	"github.com/Sirupsen/logrus"
 	"github.com/docker/distribution"
